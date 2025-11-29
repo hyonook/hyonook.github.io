@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>몬스터 헌터</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #1a1a2e;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        #gameCanvas {
+            border: 3px solid #16213e;
+            background: #0f3460;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #ui {
+            margin-top: 15px;
+            display: flex;
+            gap: 30px;
+            font-size: 18px;
+            background: #16213e;
+            padding: 15px 30px;
+            border-radius: 10px;
+        }
+        #ui div {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .stat-label {
+            color: #aaa;
+        }
+        .stat-value {
+            color: #4ecca3;
+            font-weight: bold;
+        }
+        #controls {
+            margin-top: 15px;
+            text-align: center;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="ui">
+        <div><span class="stat-label">레벨:</span> <span class="stat-value" id="level">1</span></div>
+        <div><span class="stat-label">경험치:</span> <span class="stat-value" id="exp">0</span> / <span id="expMax">10</span></div>
+        <div><span class="stat-label">처치:</span> <span class="stat-value" id="kills">0</span></div>
+        <div><span class="stat-label">아이템:</span> <span class="stat-value" id="items">0</span></div>
+    </div>
+    <div id="controls">
+        ⬆️⬇️⬅️➡️ 방향키로 이동 | 자동 공격 | 우측 상단 미니맵 확인!
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 게임 설정
+        const MAP_WIDTH = 3000;
+        const MAP_HEIGHT = 3000;
+
+        // 게임 상태
+        const game = {
+            camera: {
+                x: 0,
+                y: 0
+            },
+            player: {
+                x: MAP_WIDTH / 2,  // 맵 중앙
+                y: MAP_HEIGHT / 2,
+                size: 20,
+                speed: 4,
+                hp: 100,
+                maxHp: 100,
+                level: 1,
+                exp: 0,
+                expToLevel: 10,
+                attackCooldown: 0,
+                attackSpeed: 30
+            },
+            monsters: [],
+            projectiles: [],
+            items: [],
+            keys: {},
+            kills: 0,
+            itemsCollected: 0
+        };
+
+        // 몬스터 생성 (플레이어가 갈 수 있는 범위 내에서만)
+        function spawnMonster() {
+            const minX = canvas.width / 2;
+            const maxX = MAP_WIDTH - canvas.width / 2;
+            const minY = canvas.height / 2;
+            const maxY = MAP_HEIGHT - canvas.height / 2;
+            
+            game.monsters.push({
+                x: minX + Math.random() * (maxX - minX),
+                y: minY + Math.random() * (maxY - minY),
+                size: 15,
+                speed: 1 + Math.random() * 0.5,
+                hp: 3,
+                maxHp: 3,
+                color: `hsl(${Math.random() * 60 + 10}, 70%, 50%)`,
+                // AI 상태
+                state: 'wander', // wander(배회) 또는 chase(추격)
+                wanderAngle: Math.random() * Math.PI * 2,
+                wanderTimer: Math.random() * 120 + 60, // 방향 바꾸는 시간
+                detectionRange: 200, // 플레이어 감지 거리
+                chaseSpeed: 1.5 // 추격 속도
+            });
+        }
+
+        // 초기 몬스터 생성
+        for (let i = 0; i < 80; i++) {
+            spawnMonster();
+        }
+
+        // 키보드 입력
+        document.addEventListener('keydown', (e) => {
+            game.keys[e.key] = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            game.keys[e.key] = false;
+        });
+
+        // 플레이어 이동
+        function movePlayer() {
+            if (game.keys['ArrowUp'] || game.keys['w']) game.player.y -= game.player.speed;
+            if (game.keys['ArrowDown'] || game.keys['s']) game.player.y += game.player.speed;
+            if (game.keys['ArrowLeft'] || game.keys['a']) game.player.x -= game.player.speed;
+            if (game.keys['ArrowRight'] || game.keys['d']) game.player.x += game.player.speed;
+
+            // 플레이어를 카메라가 벗어나지 않는 범위로 제한
+            const minX = canvas.width / 2;
+            const maxX = MAP_WIDTH - canvas.width / 2;
+            const minY = canvas.height / 2;
+            const maxY = MAP_HEIGHT - canvas.height / 2;
+
+            game.player.x = Math.max(minX, Math.min(maxX, game.player.x));
+            game.player.y = Math.max(minY, Math.min(maxY, game.player.y));
+
+            // 카메라를 플레이어 중심으로
+            game.camera.x = game.player.x - canvas.width / 2;
+            game.camera.y = game.player.y - canvas.height / 2;
+        }
+
+        // 몬스터 AI 업데이트
+        function updateMonsters() {
+            game.monsters.forEach(monster => {
+                const distToPlayer = Math.hypot(
+                    game.player.x - monster.x, 
+                    game.player.y - monster.y
+                );
+
+                // 플레이어가 감지 범위 안에 있으면 추격
+                if (distToPlayer < monster.detectionRange) {
+                    monster.state = 'chase';
+                } else {
+                    monster.state = 'wander';
+                }
+
+                if (monster.state === 'chase') {
+                    // 플레이어 추격
+                    const angle = Math.atan2(
+                        game.player.y - monster.y,
+                        game.player.x - monster.x
+                    );
+                    monster.x += Math.cos(angle) * monster.chaseSpeed;
+                    monster.y += Math.sin(angle) * monster.chaseSpeed;
+                } else {
+                    // 배회
+                    monster.wanderTimer--;
+                    
+                    if (monster.wanderTimer <= 0) {
+                        // 새로운 방향 설정
+                        monster.wanderAngle = Math.random() * Math.PI * 2;
+                        monster.wanderTimer = Math.random() * 120 + 60;
+                    }
+                    
+                    // 배회 이동
+                    monster.x += Math.cos(monster.wanderAngle) * (monster.speed * 0.5);
+                    monster.y += Math.sin(monster.wanderAngle) * (monster.speed * 0.5);
+                }
+
+                // 몬스터를 맵 안쪽으로 제한
+                const minX = canvas.width / 2;
+                const maxX = MAP_WIDTH - canvas.width / 2;
+                const minY = canvas.height / 2;
+                const maxY = MAP_HEIGHT - canvas.height / 2;
+
+                monster.x = Math.max(minX, Math.min(maxX, monster.x));
+                monster.y = Math.max(minY, Math.min(maxY, monster.y));
+            });
+        }
+
+        // 자동 공격
+        function autoAttack() {
+            game.player.attackCooldown--;
+            
+            if (game.player.attackCooldown <= 0 && game.monsters.length > 0) {
+                let closest = null;
+                let minDist = Infinity;
+
+                game.monsters.forEach(monster => {
+                    const dist = Math.hypot(monster.x - game.player.x, monster.y - game.player.y);
+                    if (dist < minDist && dist < 400) {  // 공격 범위 제한
+                        minDist = dist;
+                        closest = monster;
+                    }
+                });
+
+                if (closest) {
+                    const angle = Math.atan2(closest.y - game.player.y, closest.x - game.player.x);
+                    game.projectiles.push({
+                        x: game.player.x,
+                        y: game.player.y,
+                        vx: Math.cos(angle) * 8,
+                        vy: Math.sin(angle) * 8,
+                        size: 5,
+                        damage: 1
+                    });
+                    game.player.attackCooldown = game.player.attackSpeed;
+                }
+            }
+        }
+
+        // 투사체 업데이트
+        function updateProjectiles() {
+            game.projectiles = game.projectiles.filter(proj => {
+                proj.x += proj.vx;
+                proj.y += proj.vy;
+
+                // 맵 밖으로 나가면 제거
+                if (proj.x < 0 || proj.x > MAP_WIDTH || proj.y < 0 || proj.y > MAP_HEIGHT) {
+                    return false;
+                }
+
+                // 몬스터와 충돌 체크
+                for (let i = 0; i < game.monsters.length; i++) {
+                    const monster = game.monsters[i];
+                    const dist = Math.hypot(monster.x - proj.x, monster.y - proj.y);
+                    
+                    if (dist < monster.size + proj.size) {
+                        monster.hp -= proj.damage;
+                        
+                        if (monster.hp <= 0) {
+                            spawnItem(monster.x, monster.y);
+                            game.monsters.splice(i, 1);
+                            game.kills++;
+                            spawnMonster();
+                        }
+                        
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+        }
+
+        // 아이템 생성
+        function spawnItem(x, y) {
+            const type = Math.random() < 0.7 ? 'exp' : 'coin';
+            game.items.push({
+                x: x,
+                y: y,
+                size: 8,
+                type: type,
+                value: type === 'exp' ? 1 : 5
+            });
+        }
+
+        // 아이템 수집
+        function collectItems() {
+            game.items = game.items.filter(item => {
+                const dist = Math.hypot(item.x - game.player.x, item.y - game.player.y);
+                
+                if (dist < game.player.size + item.size + 15) {
+                    if (item.type === 'exp') {
+                        game.player.exp += item.value;
+                        if (game.player.exp >= game.player.expToLevel) {
+                            levelUp();
+                        }
+                    } else {
+                        game.itemsCollected++;
+                    }
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        // 레벨업
+        function levelUp() {
+            game.player.level++;
+            game.player.exp = 0;
+            game.player.expToLevel = Math.floor(game.player.expToLevel * 1.5);
+            game.player.speed += 0.3;
+            game.player.attackSpeed = Math.max(10, game.player.attackSpeed - 2);
+            game.player.maxHp += 10;
+            game.player.hp = game.player.maxHp;
+        }
+
+        // 월드 좌표를 스크린 좌표로 변환
+        function worldToScreen(x, y) {
+            return {
+                x: x - game.camera.x,
+                y: y - game.camera.y
+            };
+        }
+
+        // 화면에 보이는지 체크
+        function isOnScreen(x, y, margin = 50) {
+            const screen = worldToScreen(x, y);
+            return screen.x > -margin && screen.x < canvas.width + margin &&
+                   screen.y > -margin && screen.y < canvas.height + margin;
+        }
+
+        // 그리기
+        function draw() {
+            // 배경
+            ctx.fillStyle = '#0f3460';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 그리드
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1;
+            
+            const gridSize = 50;
+            const startX = Math.floor(game.camera.x / gridSize) * gridSize;
+            const startY = Math.floor(game.camera.y / gridSize) * gridSize;
+            
+            for (let x = startX; x < game.camera.x + canvas.width; x += gridSize) {
+                const screenX = x - game.camera.x;
+                ctx.beginPath();
+                ctx.moveTo(screenX, 0);
+                ctx.lineTo(screenX, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = startY; y < game.camera.y + canvas.height; y += gridSize) {
+                const screenY = y - game.camera.y;
+                ctx.beginPath();
+                ctx.moveTo(0, screenY);
+                ctx.lineTo(canvas.width, screenY);
+                ctx.stroke();
+            }
+
+            // 아이템
+            game.items.forEach(item => {
+                if (isOnScreen(item.x, item.y)) {
+                    const screen = worldToScreen(item.x, item.y);
+                    
+                    ctx.fillStyle = item.type === 'exp' ? '#4ecca3' : '#ffd93d';
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, item.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    ctx.strokeStyle = item.type === 'exp' ? '#4ecca3' : '#ffd93d';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, item.size + 3, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            });
+
+            // 몬스터
+            game.monsters.forEach(monster => {
+                if (isOnScreen(monster.x, monster.y)) {
+                    const screen = worldToScreen(monster.x, monster.y);
+                    
+                    // 추격 중이면 색상 변경 (더 빨갛게)
+                    if (monster.state === 'chase') {
+                        ctx.fillStyle = '#ff4444';
+                    } else {
+                        ctx.fillStyle = monster.color;
+                    }
+                    
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, monster.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // 추격 중이면 테두리 추가
+                    if (monster.state === 'chase') {
+                        ctx.strokeStyle = '#ff0000';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.arc(screen.x, screen.y, monster.size + 2, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+
+                    // HP 바
+                    const barWidth = monster.size * 2;
+                    const hpPercent = monster.hp / monster.maxHp;
+                    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                    ctx.fillRect(screen.x - barWidth/2, screen.y - monster.size - 8, barWidth, 4);
+                    ctx.fillStyle = '#e74c3c';
+                    ctx.fillRect(screen.x - barWidth/2, screen.y - monster.size - 8, barWidth * hpPercent, 4);
+                }
+            });
+
+            // 투사체
+            game.projectiles.forEach(proj => {
+                if (isOnScreen(proj.x, proj.y)) {
+                    const screen = worldToScreen(proj.x, proj.y);
+                    ctx.fillStyle = '#e74c3c';
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, proj.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+
+            // 플레이어 (항상 화면 중앙)
+            const playerScreen = worldToScreen(game.player.x, game.player.y);
+            
+            ctx.fillStyle = '#00d9ff';
+            ctx.beginPath();
+            ctx.arc(playerScreen.x, playerScreen.y, game.player.size, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(playerScreen.x, playerScreen.y, game.player.size, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // 플레이어 HP 바
+            const hpBarWidth = 50;
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(playerScreen.x - hpBarWidth/2, playerScreen.y - game.player.size - 15, hpBarWidth, 6);
+            ctx.fillStyle = '#2ecc71';
+            ctx.fillRect(playerScreen.x - hpBarWidth/2, playerScreen.y - game.player.size - 15, 
+                        hpBarWidth * (game.player.hp / game.player.maxHp), 6);
+
+            // 미니맵
+            drawMinimap();
+        }
+
+        // 미니맵 그리기
+        function drawMinimap() {
+            const size = 150;
+            const x = canvas.width - size - 20;
+            const y = 20;
+            const scale = size / MAP_WIDTH;
+
+            // 배경
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(x, y, size, size);
+
+            // 테두리
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, size, size);
+
+            // 아이템 (초록색)
+            ctx.fillStyle = '#4ecca3';
+            game.items.forEach(item => {
+                const mx = x + item.x * scale;
+                const my = y + item.y * scale;
+                ctx.fillRect(mx - 1, my - 1, 2, 2);
+            });
+
+            // 몬스터 (빨간색)
+            ctx.fillStyle = '#ff6b6b';
+            game.monsters.forEach(monster => {
+                const mx = x + monster.x * scale;
+                const my = y + monster.y * scale;
+                ctx.fillRect(mx - 1, my - 1, 2, 2);
+            });
+
+            // 플레이어 (파란색, 크게)
+            ctx.fillStyle = '#00d9ff';
+            const px = x + game.player.x * scale;
+            const py = y + game.player.y * scale;
+            ctx.beginPath();
+            ctx.arc(px, py, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 플레이어 테두리
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(px, py, 4, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        // UI 업데이트
+        function updateUI() {
+            document.getElementById('level').textContent = game.player.level;
+            document.getElementById('exp').textContent = game.player.exp;
+            document.getElementById('expMax').textContent = game.player.expToLevel;
+            document.getElementById('kills').textContent = game.kills;
+            document.getElementById('items').textContent = game.itemsCollected;
+        }
+
+        // 게임 루프
+        function gameLoop() {
+            movePlayer();
+            updateMonsters(); // 몬스터 AI 추가
+            autoAttack();
+            updateProjectiles();
+            collectItems();
+            draw();
+            updateUI();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 게임 시작
+        gameLoop();
+    </script>
+</body>
+</html>
